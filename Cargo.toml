@@ -1,0 +1,9 @@
+[package]
+name = "stream-extractor"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+clap = { version = "4.1.8", features = ["derive"] }
+pcap-file = "2.0.0"
+pnet = "0.33.0"

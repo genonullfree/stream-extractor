@@ -13,4 +13,11 @@ Options:
   -h, --help             Print help
 ```
 
+## Build
+
+To build `stream-extractor`, execute:
+```bash
+cargo build
+```
+
 An example PCAP is located in `sample/`.

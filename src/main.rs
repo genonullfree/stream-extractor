@@ -33,6 +33,10 @@ struct Opt {
     /// Output name template
     #[arg(short, long, default_value = "output_")]
     output: String,
+
+    /// Restrict output files to ones that contain the specified port number
+    #[arg(short, long)]
+    port: Option<u16>,
 }
 
 impl StreamInfo {
@@ -68,6 +72,10 @@ impl StreamInfo {
 
     fn sequence(&self, other: &StreamInfo) -> bool {
         (self.ack == other.seq) || (self.ack == other.ack && self.seq == other.seq)
+    }
+
+    fn contains_port(&self, port: u16) -> bool {
+        self.a_port == port || self.b_port == port
     }
 }
 
@@ -132,7 +140,16 @@ impl Stream {
 fn main() {
     let opt = Opt::parse();
 
-    if let Some((header, output)) = read_pcap(&opt.input) {
+    if let Some((header, mut output)) = read_pcap(&opt.input) {
+        if let Some(port) = opt.port {
+            println!("Filtering streams by communications on port: {port}");
+            output = filter_streams(output, port);
+            if output.is_empty() {
+                println!("No streams matched filter.");
+                return;
+            }
+            println!("Number of streams that matched filter: {}", output.len());
+        }
         // Write out all extracted TCP streams
         write_pcap(header, output, &opt.output);
     }
@@ -195,6 +212,13 @@ fn read_pcap(input: &str) -> Option<(PcapHeader, Vec<Stream>)> {
     } else {
         Some((header, output))
     }
+}
+
+fn filter_streams(streams: Vec<Stream>, port: u16) -> Vec<Stream> {
+    streams
+        .into_iter()
+        .filter(|s| s.info.contains_port(port))
+        .collect()
 }
 
 fn write_pcap(header: PcapHeader, streams: Vec<Stream>, out: &str) {

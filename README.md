@@ -39,4 +39,11 @@ To build `stream-extractor`, execute:
 cargo build
 ```
 
+## Install from cargo
+
+To build and install from `cargo`, execute:
+```bash
+cargo install stream-extractor
+```
+
 An example PCAP is located in `sample/`.

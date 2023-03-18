@@ -2,6 +2,15 @@
 name = "stream-extractor"
 version = "0.2.0"
 edition = "2021"
+authors = ["geno nullfree <nullfree.geno@gmail.com>"]
+license = "BSD-3-Clause"
+description = "The TCP Stream Extractor is a small utility that can read in a PCAP file, search through it for TCP streams, and write out each stream to a separate new PCAP file."
+readme = "README.md"
+homepage = "https://github.com/genonullfree/stream-extractor.git"
+repository = "https://github.com/genonullfree/stream-extractor.git"
+keywords = ["pcap", "tcp", "stream"]
+categories = ["command-line-utilities", "network-programming"]
+exclude = ["sample"]
 
 [dependencies]
 clap = { version = "4.1.8", features = ["derive"] }

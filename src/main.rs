@@ -34,11 +34,11 @@ struct Opt {
     #[arg(short, long, default_value = "output_")]
     output: String,
 
-    /// Restrict output files to ones that contain the specified port number
+    /// Filter output files to ones that contain the specified port number
     #[arg(short, long)]
     port: Option<u16>,
 
-    /// Restrict output files to ones that contains the specified IP address
+    /// Filter output files to ones that contain the specified IP address
     #[arg(long)]
     ip: Option<Ipv4Addr>,
 }

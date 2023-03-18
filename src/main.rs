@@ -37,6 +37,10 @@ struct Opt {
     /// Restrict output files to ones that contain the specified port number
     #[arg(short, long)]
     port: Option<u16>,
+
+    /// Restrict output files to ones that contains the specified IP address
+    #[arg(long)]
+    ip: Option<Ipv4Addr>,
 }
 
 impl StreamInfo {
@@ -57,7 +61,7 @@ impl StreamInfo {
 
     /// Validate if the current stream is the same as the other stream
     pub fn is_stream(&self, other: &StreamInfo) -> bool {
-        self.same_ports(other) && self.same_ips(other) //&& self.sequence(other)
+        self.same_ports(other) && self.same_ips(other)
     }
 
     fn same_ports(&self, other: &StreamInfo) -> bool {
@@ -70,12 +74,11 @@ impl StreamInfo {
             || (self.a_ip == other.b_ip && self.b_ip == other.a_ip)
     }
 
-    fn sequence(&self, other: &StreamInfo) -> bool {
-        (self.ack == other.seq) || (self.ack == other.ack && self.seq == other.seq)
-    }
-
     fn contains_port(&self, port: u16) -> bool {
         self.a_port == port || self.b_port == port
+    }
+    fn contains_ipaddr(&self, ip: Ipv4Addr) -> bool {
+        self.a_ip == ip || self.b_ip == ip
     }
 }
 
@@ -141,14 +144,15 @@ fn main() {
     let opt = Opt::parse();
 
     if let Some((header, mut output)) = read_pcap(&opt.input) {
-        if let Some(port) = opt.port {
-            println!("Filtering streams by communications on port: {port}");
-            output = filter_streams(output, port);
-            if output.is_empty() {
-                println!("No streams matched filter.");
-                return;
-            }
-            println!("Number of streams that matched filter: {}", output.len());
+        let orig_len = output.len();
+        output = filter_port(output, opt.port);
+        output = filter_ip(output, opt.ip);
+        if output.is_empty() {
+            println!("No streams matched filter.");
+            return;
+        }
+        if orig_len != output.len() {
+            println!("Number of streams that matched filters: {}", output.len());
         }
         // Write out all extracted TCP streams
         write_pcap(header, output, &opt.output);
@@ -214,11 +218,32 @@ fn read_pcap(input: &str) -> Option<(PcapHeader, Vec<Stream>)> {
     }
 }
 
-fn filter_streams(streams: Vec<Stream>, port: u16) -> Vec<Stream> {
-    streams
-        .into_iter()
-        .filter(|s| s.info.contains_port(port))
-        .collect()
+fn filter_port(streams: Vec<Stream>, port: Option<u16>) -> Vec<Stream> {
+    if let Some(port) = port {
+        println!("Filtering streams by communications including port: {port}");
+        let filtered: Vec<_> = streams
+            .into_iter()
+            .filter(|s| s.info.contains_port(port))
+            .collect();
+        println!(" + Found {} matching streams", filtered.len());
+        filtered
+    } else {
+        streams
+    }
+}
+
+fn filter_ip(streams: Vec<Stream>, ip: Option<Ipv4Addr>) -> Vec<Stream> {
+    if let Some(ip) = ip {
+        println!("Filtering streams by communications including IP address: {ip}");
+        let filtered: Vec<_> = streams
+            .into_iter()
+            .filter(|s| s.info.contains_ipaddr(ip))
+            .collect();
+        println!(" + Found {} matching streams", filtered.len());
+        filtered
+    } else {
+        streams
+    }
 }
 
 fn write_pcap(header: PcapHeader, streams: Vec<Stream>, out: &str) {

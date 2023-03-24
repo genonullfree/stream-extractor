@@ -6,6 +6,7 @@ use pnet::packet::ethernet::{EtherTypes, EthernetPacket};
 use pnet::packet::ipv4::Ipv4Packet;
 use pnet::packet::tcp::TcpPacket;
 use pnet::packet::Packet;
+use std::fmt;
 use std::fs::File;
 use std::io;
 use std::io::Write;
@@ -41,6 +42,10 @@ struct Opt {
     /// Filter output files to ones that contain the specified IP address
     #[arg(long)]
     ip: Option<Ipv4Addr>,
+
+    /// Enable verbose mode to print TCP stream info for each output PCAP file
+    #[arg(short, long)]
+    verbose: bool,
 }
 
 impl StreamInfo {
@@ -79,6 +84,16 @@ impl StreamInfo {
     }
     fn contains_ipaddr(&self, ip: Ipv4Addr) -> bool {
         self.a_ip == ip || self.b_ip == ip
+    }
+}
+
+impl fmt::Display for StreamInfo {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "IP Addresses: [{}, {}] Ports: [{}, {}]",
+            self.a_ip, self.b_ip, self.a_port, self.b_port
+        )
     }
 }
 
@@ -155,7 +170,7 @@ fn main() {
             println!("Number of streams that matched filters: {}", output.len());
         }
         // Write out all extracted TCP streams
-        write_pcap(header, output, &opt.output);
+        write_pcap(header, output, &opt.output, opt.verbose);
     }
 }
 
@@ -246,15 +261,24 @@ fn filter_ip(streams: Vec<Stream>, ip: Option<Ipv4Addr>) -> Vec<Stream> {
     }
 }
 
-fn write_pcap(header: PcapHeader, streams: Vec<Stream>, out: &str) {
+fn write_pcap(header: PcapHeader, streams: Vec<Stream>, out: &str, verbose: bool) {
+    if verbose {
+        println!("Writing files...");
+    }
+
     // Iterate through every stream
     for (n, stream) in streams.iter().enumerate() {
         // Open new file with the original pcap header
-        let file = File::create(format!("{out}{n:04}.pcap")).expect("Error opening output file");
+        let filename = format!("{out}{n:04}.pcap");
+        let file = File::create(&filename).expect("Error opening output file");
         let mut pcap_writer = PcapWriter::with_header(file, header).expect("Error writing file");
 
-        print!("\rWriting output file: {}", n + 1,);
-        io::stdout().flush().expect("Fatal IO error");
+        if verbose {
+            println!("{filename}: {}", stream.info);
+        } else {
+            print!("\rWriting output file: {}", n + 1,);
+            io::stdout().flush().expect("Fatal IO error");
+        }
 
         // Write every packet in the Stream to the new pcap file
         for p in &stream.packets {

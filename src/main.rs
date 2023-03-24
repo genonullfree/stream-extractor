@@ -142,8 +142,8 @@ impl fmt::Display for StreamInfo {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "IP Addresses: [{}, {}] Ports: [{}, {}]",
-            self.a_ip, self.b_ip, self.a_port, self.b_port
+            "IP Addresses: [{}, {}] Ports: [{}, {}] {:?}",
+            self.a_ip, self.b_ip, self.a_port, self.b_port, self.packet_type,
         )
     }
 }
@@ -228,6 +228,11 @@ fn exec_scan(opt: ScanOpt) {
             println!("Number of streams that matched filters: {}", output.len());
         }
         let (tcp, udp) = count_streams(&output);
+        if opt.verbose {
+            for (n, stream) in output.iter().enumerate() {
+                println!("{n}: {} Packets: {}", stream.info, stream.packets.len());
+            }
+        }
         println!("Number of TCP streams detected: {}", tcp);
         println!("Number of UDP communications detected: {}", udp);
     }

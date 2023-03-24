@@ -43,6 +43,9 @@ struct Opt {
 enum Cmd {
     /// Extract TCP streams from a PCAP
     Extract(ExtractOpt),
+
+    /// Scan the PCAP and search for an IP or Port
+    Scan(ScanOpt),
 }
 
 #[derive(Debug, Clone, Parser)]
@@ -208,7 +211,26 @@ fn main() {
 
     match opt.cmd {
         Cmd::Extract(ext) => exec_extract_tcpstreams(ext),
+        Cmd::Scan(scan) => exec_scan(scan),
     };
+}
+
+fn exec_scan(opt: ScanOpt) {
+    if let Some((_, mut output)) = read_pcap(&opt.input) {
+        let orig_len = output.len();
+        output = filter_port(output, opt.port);
+        output = filter_ip(output, opt.ip);
+        if output.is_empty() {
+            println!("No streams matched filter.");
+            return;
+        }
+        if orig_len != output.len() {
+            println!("Number of streams that matched filters: {}", output.len());
+        }
+        let (tcp, udp) = count_streams(&output);
+        println!("Number of TCP streams detected: {}", tcp);
+        println!("Number of UDP communications detected: {}", udp);
+    }
 }
 
 fn exec_extract_tcpstreams(opt: ExtractOpt) {
@@ -313,6 +335,19 @@ fn filter_ip(streams: Vec<Stream>, ip: Option<Ipv4Addr>) -> Vec<Stream> {
     } else {
         streams
     }
+}
+
+fn count_streams(input: &Vec<Stream>) -> (usize, usize) {
+    let mut tcp = 0;
+    let mut udp = 0;
+    for stream in input {
+        match stream.info.packet_type {
+            PacketType::Tcp => tcp += 1,
+            PacketType::Udp => udp += 1,
+        }
+    }
+
+    (tcp, udp)
 }
 
 fn write_pcap(

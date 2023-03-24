@@ -5,6 +5,7 @@ use pcap_file::pcap::{PcapReader, PcapWriter};
 use pnet::packet::ethernet::{EtherTypes, EthernetPacket};
 use pnet::packet::ipv4::Ipv4Packet;
 use pnet::packet::tcp::TcpPacket;
+use pnet::packet::udp::UdpPacket;
 use pnet::packet::Packet;
 use std::fmt;
 use std::fs::File;
@@ -20,8 +21,13 @@ struct StreamInfo {
     b_port: u16,
     a_ip: Ipv4Addr,
     b_ip: Ipv4Addr,
-    seq: u32,
-    ack: u32,
+    packet_type: PacketType,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq)]
+enum PacketType {
+    Tcp,
+    Udp,
 }
 
 /// The TCP Stream Extractor will extract all TCP streams from a pcap and rewrite them into separate pcap files
@@ -41,7 +47,7 @@ enum Cmd {
 
 #[derive(Debug, Clone, Parser)]
 struct ExtractOpt {
-    /// Input pcap file to split
+    /// Input pcap file to extract TCP streams from
     #[arg(short, long, required = true)]
     input: String,
 
@@ -62,20 +68,48 @@ struct ExtractOpt {
     verbose: bool,
 }
 
+#[derive(Debug, Clone, Parser)]
+struct ScanOpt {
+    /// Input pcap file to scan
+    #[arg(short, long, required = true)]
+    input: String,
+
+    /// Search PCAP to see if this port number is used
+    #[arg(short, long)]
+    port: Option<u16>,
+
+    /// Filter output files to ones that contain the specified IP address
+    #[arg(long)]
+    ip: Option<Ipv4Addr>,
+
+    /// Enable verbose mode to print TCP stream info for each output PCAP file
+    #[arg(short, long)]
+    verbose: bool,
+}
+
 impl StreamInfo {
     /// Attempt to generate a new StreamInfo from an Ethernet packet payload
     pub fn new(input: &[u8]) -> Option<Self> {
         let ipv4 = Ipv4Packet::new(input)?;
-        let tcp = TcpPacket::new(ipv4.payload())?;
+        if let Some(tcp) = TcpPacket::new(ipv4.payload()) {
+            return Some(Self {
+                a_port: tcp.get_source(),
+                b_port: tcp.get_destination(),
+                a_ip: ipv4.get_source(),
+                b_ip: ipv4.get_destination(),
+                packet_type: PacketType::Tcp,
+            });
+        } else if let Some(udp) = UdpPacket::new(ipv4.payload()) {
+            return Some(Self {
+                a_port: udp.get_source(),
+                b_port: udp.get_destination(),
+                a_ip: ipv4.get_source(),
+                b_ip: ipv4.get_destination(),
+                packet_type: PacketType::Udp,
+            });
+        }
 
-        Some(Self {
-            a_port: tcp.get_source(),
-            b_port: tcp.get_destination(),
-            a_ip: ipv4.get_source(),
-            b_ip: ipv4.get_destination(),
-            seq: tcp.get_sequence(),
-            ack: tcp.get_acknowledgement(),
-        })
+        None
     }
 
     /// Validate if the current stream is the same as the other stream
@@ -173,11 +207,11 @@ fn main() {
     let opt = Opt::parse();
 
     match opt.cmd {
-        Cmd::Extract(ext) => exec_extract(ext),
+        Cmd::Extract(ext) => exec_extract_tcpstreams(ext),
     };
 }
 
-fn exec_extract(opt: ExtractOpt) {
+fn exec_extract_tcpstreams(opt: ExtractOpt) {
     if let Some((header, mut output)) = read_pcap(&opt.input) {
         let orig_len = output.len();
         output = filter_port(output, opt.port);
@@ -190,7 +224,7 @@ fn exec_extract(opt: ExtractOpt) {
             println!("Number of streams that matched filters: {}", output.len());
         }
         // Write out all extracted TCP streams
-        write_pcap(header, output, &opt.output, opt.verbose);
+        write_pcap(header, output, &opt.output, opt.verbose, PacketType::Tcp);
     }
 }
 
@@ -281,13 +315,22 @@ fn filter_ip(streams: Vec<Stream>, ip: Option<Ipv4Addr>) -> Vec<Stream> {
     }
 }
 
-fn write_pcap(header: PcapHeader, streams: Vec<Stream>, out: &str, verbose: bool) {
+fn write_pcap(
+    header: PcapHeader,
+    streams: Vec<Stream>,
+    out: &str,
+    verbose: bool,
+    packet_type: PacketType,
+) {
     if verbose {
         println!("Writing files...");
     }
 
     // Iterate through every stream
     for (n, stream) in streams.iter().enumerate() {
+        if stream.info.packet_type != packet_type {
+            continue;
+        }
         // Open new file with the original pcap header
         let filename = format!("{out}{n:04}.pcap");
         let file = File::create(&filename).expect("Error opening output file");

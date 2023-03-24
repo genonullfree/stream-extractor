@@ -12,6 +12,7 @@ Options:
   -o, --output <OUTPUT>  Output name template [default: output_]
   -p, --port <PORT>      Filter output files to ones that contain the specified port number
       --ip <IP>          Filter output files to ones that contain the specified IP address
+  -v, --verbose          Enable verbose mode to print TCP stream info for each output PCAP file
   -h, --help             Print help
 ```
 

@@ -26,7 +26,21 @@ struct StreamInfo {
 
 /// The TCP Stream Extractor will extract all TCP streams from a pcap and rewrite them into separate pcap files
 #[derive(Debug, Clone, Parser)]
+#[command(version)]
 struct Opt {
+    /// Command
+    #[command(subcommand)]
+    cmd: Cmd,
+}
+
+#[derive(Debug, Clone, Parser)]
+enum Cmd {
+    /// Extract TCP streams from a PCAP
+    Extract(ExtractOpt),
+}
+
+#[derive(Debug, Clone, Parser)]
+struct ExtractOpt {
     /// Input pcap file to split
     #[arg(short, long, required = true)]
     input: String,
@@ -158,6 +172,12 @@ impl Stream {
 fn main() {
     let opt = Opt::parse();
 
+    match opt.cmd {
+        Cmd::Extract(ext) => exec_extract(ext),
+    };
+}
+
+fn exec_extract(opt: ExtractOpt) {
     if let Some((header, mut output)) = read_pcap(&opt.input) {
         let orig_len = output.len();
         output = filter_port(output, opt.port);
@@ -274,7 +294,11 @@ fn write_pcap(header: PcapHeader, streams: Vec<Stream>, out: &str, verbose: bool
         let mut pcap_writer = PcapWriter::with_header(file, header).expect("Error writing file");
 
         if verbose {
-            println!("{filename}: {}", stream.info);
+            println!(
+                "{filename}: {} Packets: {}",
+                stream.info,
+                stream.packets.len()
+            );
         } else {
             print!("\rWriting output file: {}", n + 1,);
             io::stdout().flush().expect("Fatal IO error");

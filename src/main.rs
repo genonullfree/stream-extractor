@@ -7,6 +7,7 @@ use pnet::packet::ipv4::Ipv4Packet;
 use pnet::packet::tcp::TcpPacket;
 use pnet::packet::udp::UdpPacket;
 use pnet::packet::Packet;
+use pnet::util::MacAddr;
 use std::fmt;
 use std::fs::File;
 use std::io;
@@ -21,6 +22,8 @@ struct StreamInfo {
     b_port: u16,
     a_ip: Ipv4Addr,
     b_ip: Ipv4Addr,
+    a_mac: MacAddr,
+    b_mac: MacAddr,
     packet_type: PacketType,
 }
 
@@ -38,6 +41,7 @@ struct StreamCounts {
     ipv4: usize,
     ports: Vec<u16>,
     ipaddrs: Vec<Ipv4Addr>,
+    macs: Vec<MacAddr>,
 }
 
 impl StreamCounts {
@@ -65,18 +69,25 @@ impl StreamCounts {
             if !counts.ipaddrs.contains(&stream.info.b_ip) {
                 counts.ipaddrs.push(stream.info.b_ip);
             }
+            if !counts.macs.contains(&stream.info.a_mac) {
+                counts.macs.push(stream.info.a_mac);
+            }
+            if !counts.macs.contains(&stream.info.b_mac) {
+                counts.macs.push(stream.info.b_mac);
+            }
         }
 
         counts.ports.sort();
         counts.ipaddrs.sort();
+        counts.macs.sort();
 
         counts
     }
 
     pub fn print_comms(&self) {
         println!(
-            "TCP stream count: {}\nUDP communications count: {}\nIPv4 pair count: {}",
-            self.tcp, self.udp, self.ipv4,
+            "TCP stream count: {}\nUDP communications count: {}\nIPv4 pair count: {}\nUnique ports: {}\nUnique IP addresses: {}\nUnique MAC addresses: {}",
+            self.tcp, self.udp, self.ipv4, self.ports.len(), self.ipaddrs.len(), self.macs.len(),
         );
     }
 
@@ -86,6 +97,10 @@ impl StreamCounts {
 
     pub fn print_ipaddrs(&self) {
         println!("IP Addresses present: {:?}", self.ipaddrs);
+    }
+
+    pub fn print_macs(&self) {
+        println!("MAC Addresses present: {:?}", self.macs);
     }
 }
 
@@ -143,13 +158,17 @@ struct ListOpt {
     #[arg(short, long)]
     count: bool,
 
-    /// List the port numbers in use
+    /// List the port numbers present
     #[arg(short, long)]
     ports: bool,
 
-    /// List the IP addresses in use
+    /// List the IP addresses present
     #[arg(long)]
     ip: bool,
+
+    /// List the MAC addresses present
+    #[arg(short, long)]
+    mac: bool,
 
     /// Print all connection statistics
     #[arg(short, long)]
@@ -170,6 +189,10 @@ struct ScanOpt {
     #[arg(long)]
     ip: Option<Ipv4Addr>,
 
+    /// Search PCAP to see if this MAC address is present
+    #[arg(short, long)]
+    mac: Option<MacAddr>,
+
     /// Count how many times the search terms are present
     #[arg(short, long)]
     count: bool,
@@ -181,14 +204,16 @@ struct ScanOpt {
 
 impl StreamInfo {
     /// Attempt to generate a new StreamInfo from an Ethernet packet payload
-    pub fn new(input: &[u8]) -> Option<Self> {
-        let ipv4 = Ipv4Packet::new(input)?;
+    pub fn new(input: &EthernetPacket) -> Option<Self> {
+        let ipv4 = Ipv4Packet::new(input.payload())?;
         if let Some(tcp) = TcpPacket::new(ipv4.payload()) {
             return Some(Self {
                 a_port: tcp.get_source(),
                 b_port: tcp.get_destination(),
                 a_ip: ipv4.get_source(),
                 b_ip: ipv4.get_destination(),
+                a_mac: input.get_source(),
+                b_mac: input.get_destination(),
                 packet_type: PacketType::Tcp,
             });
         } else if let Some(udp) = UdpPacket::new(ipv4.payload()) {
@@ -197,6 +222,8 @@ impl StreamInfo {
                 b_port: udp.get_destination(),
                 a_ip: ipv4.get_source(),
                 b_ip: ipv4.get_destination(),
+                a_mac: input.get_source(),
+                b_mac: input.get_destination(),
                 packet_type: PacketType::Udp,
             });
         }
@@ -206,6 +233,8 @@ impl StreamInfo {
             b_port: 0,
             a_ip: ipv4.get_source(),
             b_ip: ipv4.get_destination(),
+            a_mac: input.get_source(),
+            b_mac: input.get_destination(),
             packet_type: PacketType::Ipv4,
         })
     }
@@ -231,14 +260,24 @@ impl StreamInfo {
     fn contains_ipaddr(&self, ip: Ipv4Addr) -> bool {
         self.a_ip == ip || self.b_ip == ip
     }
+
+    fn contains_mac(&self, mac: MacAddr) -> bool {
+        self.a_mac == mac || self.b_mac == mac
+    }
 }
 
 impl fmt::Display for StreamInfo {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "IP Addresses: [{}, {}] Ports: [{}, {}] {:?}",
-            self.a_ip, self.b_ip, self.a_port, self.b_port, self.packet_type,
+            "MAC Addresses: [{}, {}] IP Addresses: [{}, {}] Ports: [{}, {}] {:?}",
+            self.a_mac,
+            self.b_mac,
+            self.a_ip,
+            self.b_ip,
+            self.a_port,
+            self.b_port,
+            self.packet_type,
         )
     }
 }
@@ -322,7 +361,7 @@ fn exec_list(opt: ListOpt) {
                 println!("{n}: {} Packets: {}", stream.info, stream.packets.len());
             }
         }
-        if opt.count || opt.ports || opt.ip {
+        if opt.count || opt.ports || opt.ip || opt.mac {
             let counts = StreamCounts::tally(&output);
             if opt.count {
                 counts.print_comms();
@@ -333,6 +372,9 @@ fn exec_list(opt: ListOpt) {
             if opt.ip {
                 counts.print_ipaddrs();
             }
+            if opt.mac {
+                counts.print_macs();
+            }
         }
     }
 }
@@ -341,6 +383,7 @@ fn exec_scan(opt: ScanOpt) {
     if let Some((_, mut output)) = read_pcap(&opt.input) {
         output = filter_port(output, opt.port);
         output = filter_ip(output, opt.ip);
+        output = filter_mac(output, opt.mac);
         if output.is_empty() {
             println!("No streams matched filter.");
             return;
@@ -402,7 +445,7 @@ fn read_pcap(input: &str) -> Option<(PcapHeader, Vec<Stream>)> {
             // Validate it is an IPv4 packet
             if eth.get_ethertype() == EtherTypes::Ipv4 {
                 // Validate it is a TCP packet and we have extracted it
-                if let Some(si) = StreamInfo::new(eth.payload()) {
+                if let Some(si) = StreamInfo::new(&eth) {
                     // If our list is empty, add it
                     if output.is_empty() {
                         output.push(Stream::new(si, packet));
@@ -453,6 +496,20 @@ fn filter_ip(streams: Vec<Stream>, ip: Option<Ipv4Addr>) -> Vec<Stream> {
         let filtered: Vec<_> = streams
             .into_iter()
             .filter(|s| s.info.contains_ipaddr(ip))
+            .collect();
+        println!(" + Found {} matching streams", filtered.len());
+        filtered
+    } else {
+        streams
+    }
+}
+
+fn filter_mac(streams: Vec<Stream>, mac: Option<MacAddr>) -> Vec<Stream> {
+    if let Some(mac) = mac {
+        println!("Filtering streams by communications including MAC address: {mac}");
+        let filtered: Vec<_> = streams
+            .into_iter()
+            .filter(|s| s.info.contains_mac(mac))
             .collect();
         println!(" + Found {} matching streams", filtered.len());
         filtered

@@ -31,11 +31,13 @@ enum PacketType {
     Ipv4,
 }
 
-#[derive(Debug, Default, Copy, Clone, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq)]
 struct StreamCounts {
     tcp: usize,
     udp: usize,
     ipv4: usize,
+    ports: Vec<u16>,
+    ipaddrs: Vec<Ipv4Addr>,
 }
 
 impl StreamCounts {
@@ -46,20 +48,44 @@ impl StreamCounts {
                 PacketType::Tcp => counts.tcp += 1,
                 PacketType::Udp => counts.udp += 1,
                 PacketType::Ipv4 => counts.ipv4 += 1,
+            };
+
+            if !counts.ports.contains(&stream.info.a_port) {
+                counts.ports.push(stream.info.a_port);
+            }
+
+            if !counts.ports.contains(&stream.info.b_port) {
+                counts.ports.push(stream.info.b_port);
+            }
+
+            if !counts.ipaddrs.contains(&stream.info.a_ip) {
+                counts.ipaddrs.push(stream.info.a_ip);
+            }
+
+            if !counts.ipaddrs.contains(&stream.info.b_ip) {
+                counts.ipaddrs.push(stream.info.b_ip);
             }
         }
 
+        counts.ports.sort();
+        counts.ipaddrs.sort();
+
         counts
     }
-}
 
-impl fmt::Display for StreamCounts {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            f,
+    pub fn print_comms(&self) {
+        println!(
             "TCP stream count: {}\nUDP communications count: {}\nIPv4 pair count: {}",
             self.tcp, self.udp, self.ipv4,
-        )
+        );
+    }
+
+    pub fn print_ports(&self) {
+        println!("Ports present: {:?}", self.ports);
+    }
+
+    pub fn print_ipaddrs(&self) {
+        println!("IP Addresses present: {:?}", self.ipaddrs);
     }
 }
 
@@ -113,9 +139,21 @@ struct ListOpt {
     #[arg(short, long, required = true)]
     input: String,
 
-    /// Count how many times the search terms are present
+    /// Count how many communications are present
     #[arg(short, long)]
     count: bool,
+
+    /// List the port numbers in use
+    #[arg(short, long)]
+    ports: bool,
+
+    /// List the IP addresses in use
+    #[arg(long)]
+    ip: bool,
+
+    /// Print all connection statistics
+    #[arg(short, long)]
+    verbose: bool,
 }
 
 #[derive(Debug, Clone, Parser)]
@@ -279,12 +317,22 @@ fn exec_list(opt: ListOpt) {
             println!("No streams present.");
             return;
         }
-        for (n, stream) in output.iter().enumerate() {
-            println!("{n}: {} Packets: {}", stream.info, stream.packets.len());
+        if opt.verbose {
+            for (n, stream) in output.iter().enumerate() {
+                println!("{n}: {} Packets: {}", stream.info, stream.packets.len());
+            }
         }
-        if opt.count {
+        if opt.count || opt.ports || opt.ip {
             let counts = StreamCounts::tally(&output);
-            println!("{counts}");
+            if opt.count {
+                counts.print_comms();
+            }
+            if opt.ports {
+                counts.print_ports();
+            }
+            if opt.ip {
+                counts.print_ipaddrs();
+            }
         }
     }
 }
@@ -304,7 +352,7 @@ fn exec_scan(opt: ScanOpt) {
         }
         if opt.count {
             let counts = StreamCounts::tally(&output);
-            println!("{counts}");
+            counts.print_comms();
         }
     }
 }

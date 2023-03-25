@@ -28,6 +28,39 @@ struct StreamInfo {
 enum PacketType {
     Tcp,
     Udp,
+    Ipv4,
+}
+
+#[derive(Debug, Default, Copy, Clone, PartialEq)]
+struct StreamCounts {
+    tcp: usize,
+    udp: usize,
+    ipv4: usize,
+}
+
+impl StreamCounts {
+    pub fn tally(input: &Vec<Stream>) -> Self {
+        let mut counts = Self::default();
+        for stream in input {
+            match stream.info.packet_type {
+                PacketType::Tcp => counts.tcp += 1,
+                PacketType::Udp => counts.udp += 1,
+                PacketType::Ipv4 => counts.ipv4 += 1,
+            }
+        }
+
+        counts
+    }
+}
+
+impl fmt::Display for StreamCounts {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "TCP stream count: {}\nUDP communications count: {}\nIPv4 pair count: {}",
+            self.tcp, self.udp, self.ipv4,
+        )
+    }
 }
 
 /// The TCP Stream Extractor will extract all TCP streams from a pcap and rewrite them into separate pcap files
@@ -46,6 +79,9 @@ enum Cmd {
 
     /// Scan the PCAP and search for an IP or Port
     Scan(ScanOpt),
+
+    /// List all of the PCAP communication info
+    List(ListOpt),
 }
 
 #[derive(Debug, Clone, Parser)]
@@ -72,20 +108,35 @@ struct ExtractOpt {
 }
 
 #[derive(Debug, Clone, Parser)]
+struct ListOpt {
+    /// Input pcap file to list
+    #[arg(short, long, required = true)]
+    input: String,
+
+    /// Count how many times the search terms are present
+    #[arg(short, long)]
+    count: bool,
+}
+
+#[derive(Debug, Clone, Parser)]
 struct ScanOpt {
     /// Input pcap file to scan
     #[arg(short, long, required = true)]
     input: String,
 
-    /// Search PCAP to see if this port number is used
+    /// Search PCAP to see if this port number is present
     #[arg(short, long)]
     port: Option<u16>,
 
-    /// Filter output files to ones that contain the specified IP address
+    /// Search PCAP to see if this IP address is present
     #[arg(long)]
     ip: Option<Ipv4Addr>,
 
-    /// Enable verbose mode to print TCP stream info for each output PCAP file
+    /// Count how many times the search terms are present
+    #[arg(short, long)]
+    count: bool,
+
+    /// Enable to print verbose connection info
     #[arg(short, long)]
     verbose: bool,
 }
@@ -112,7 +163,13 @@ impl StreamInfo {
             });
         }
 
-        None
+        Some(Self {
+            a_port: 0,
+            b_port: 0,
+            a_ip: ipv4.get_source(),
+            b_ip: ipv4.get_destination(),
+            packet_type: PacketType::Ipv4,
+        })
     }
 
     /// Validate if the current stream is the same as the other stream
@@ -211,30 +268,44 @@ fn main() {
 
     match opt.cmd {
         Cmd::Extract(ext) => exec_extract_tcpstreams(ext),
+        Cmd::List(list) => exec_list(list),
         Cmd::Scan(scan) => exec_scan(scan),
     };
 }
 
+fn exec_list(opt: ListOpt) {
+    if let Some((_, output)) = read_pcap(&opt.input) {
+        if output.is_empty() {
+            println!("No streams present.");
+            return;
+        }
+        for (n, stream) in output.iter().enumerate() {
+            println!("{n}: {} Packets: {}", stream.info, stream.packets.len());
+        }
+        if opt.count {
+            let counts = StreamCounts::tally(&output);
+            println!("{counts}");
+        }
+    }
+}
+
 fn exec_scan(opt: ScanOpt) {
     if let Some((_, mut output)) = read_pcap(&opt.input) {
-        let orig_len = output.len();
         output = filter_port(output, opt.port);
         output = filter_ip(output, opt.ip);
         if output.is_empty() {
             println!("No streams matched filter.");
             return;
         }
-        if orig_len != output.len() {
-            println!("Number of streams that matched filters: {}", output.len());
-        }
-        let (tcp, udp) = count_streams(&output);
         if opt.verbose {
             for (n, stream) in output.iter().enumerate() {
                 println!("{n}: {} Packets: {}", stream.info, stream.packets.len());
             }
         }
-        println!("Number of TCP streams detected: {}", tcp);
-        println!("Number of UDP communications detected: {}", udp);
+        if opt.count {
+            let counts = StreamCounts::tally(&output);
+            println!("{counts}");
+        }
     }
 }
 
@@ -269,7 +340,7 @@ fn read_pcap(input: &str) -> Option<(PcapHeader, Vec<Stream>)> {
     'nextpkt: while let Some(pkt) = pcap_reader.next_packet() {
         count += 1;
         print!(
-            "\rPackets processed: {count}, Streams detected: {}",
+            "\rPackets processed: {count}, Connections detected: {}",
             output.len()
         );
         io::stdout().flush().expect("Fatal IO error");
@@ -340,19 +411,6 @@ fn filter_ip(streams: Vec<Stream>, ip: Option<Ipv4Addr>) -> Vec<Stream> {
     } else {
         streams
     }
-}
-
-fn count_streams(input: &Vec<Stream>) -> (usize, usize) {
-    let mut tcp = 0;
-    let mut udp = 0;
-    for stream in input {
-        match stream.info.packet_type {
-            PacketType::Tcp => tcp += 1,
-            PacketType::Udp => udp += 1,
-        }
-    }
-
-    (tcp, udp)
 }
 
 fn write_pcap(

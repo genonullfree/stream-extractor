@@ -241,7 +241,7 @@ impl StreamInfo {
 
     /// Validate if the current stream is the same as the other stream
     pub fn is_stream(&self, other: &StreamInfo) -> bool {
-        self.same_ports(other) && self.same_ips(other)
+        self.same_ports(other) && self.same_ips(other) && self.same_packet_type(other)
     }
 
     fn same_ports(&self, other: &StreamInfo) -> bool {
@@ -252,6 +252,10 @@ impl StreamInfo {
     fn same_ips(&self, other: &StreamInfo) -> bool {
         (self.a_ip == other.a_ip && self.b_ip == other.b_ip)
             || (self.a_ip == other.b_ip && self.b_ip == other.a_ip)
+    }
+
+    fn same_packet_type(&self, other: &StreamInfo) -> bool {
+        self.packet_type == other.packet_type
     }
 
     fn contains_port(&self, port: u16) -> bool {

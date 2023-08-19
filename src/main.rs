@@ -143,6 +143,10 @@ struct ExtractOpt {
     #[arg(long)]
     ip: Option<Ipv4Addr>,
 
+    /// Deduplicate adjacent packets
+    #[arg(short, long)]
+    deduplicate: bool,
+
     /// Enable verbose mode to print TCP stream info for each output PCAP file
     #[arg(short, long)]
     verbose: bool,
@@ -348,7 +352,7 @@ fn main() {
     let opt = Opt::parse();
 
     match opt.cmd {
-        Cmd::Extract(ext) => exec_extract_tcpstreams(ext),
+        Cmd::Extract(ext) => exec_extract(ext),
         Cmd::List(list) => exec_list(list),
         Cmd::Scan(scan) => exec_scan(scan),
     };
@@ -404,11 +408,12 @@ fn exec_scan(opt: ScanOpt) {
     }
 }
 
-fn exec_extract_tcpstreams(opt: ExtractOpt) {
+fn exec_extract(opt: ExtractOpt) {
     if let Some((header, mut output)) = read_pcap(&opt.input) {
         let orig_len = output.len();
         output = filter_port(output, opt.port);
         output = filter_ip(output, opt.ip);
+        output = filter_dedupe(output, opt.deduplicate);
         if output.is_empty() {
             println!("No streams matched filter.");
             return;
@@ -516,6 +521,33 @@ fn filter_mac(streams: Vec<Stream>, mac: Option<MacAddr>) -> Vec<Stream> {
             .filter(|s| s.info.contains_mac(mac))
             .collect();
         println!(" + Found {} matching streams", filtered.len());
+        filtered
+    } else {
+        streams
+    }
+}
+
+fn filter_dedupe(streams: Vec<Stream>, dedupe: bool) -> Vec<Stream> {
+    if dedupe {
+        let mut filtered = Vec::<Stream>::new();
+        for stream in streams {
+            if stream.packets.len() <= 1 {
+                filtered.push(stream);
+                continue;
+            }
+            let mut prev_data = stream.packets[0].clone();
+            let mut new_stream = Stream::new(stream.info, prev_data.clone());
+            for p in stream.packets.iter().skip(1) {
+                if p.data == prev_data.data {
+                    continue;
+                }
+
+                new_stream.add(p.clone());
+                prev_data = p.clone();
+            }
+            filtered.push(new_stream);
+        }
+
         filtered
     } else {
         streams

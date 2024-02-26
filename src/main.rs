@@ -17,12 +17,8 @@ use std::net::Ipv4Addr;
 use std::time::Duration;
 
 /// Data that represents a packet stream
-#[derive(Debug, Copy, Clone, Eq, PartialEq, PartialOrd, Ord)]
+#[derive(Debug, Copy, Clone)]
 struct StreamInfo {
-    /// Unique stream id. We embed this here
-    /// to avoid an implicit dependency between the order we saw this Stream
-    /// and the order in which it is stored in a datastructure.
-    id: usize,
     a_port: u16,
     b_port: u16,
     a_ip: Ipv4Addr,
@@ -209,11 +205,10 @@ struct ScanOpt {
 
 impl StreamInfo {
     /// Attempt to generate a new StreamInfo from an Ethernet packet payload
-    pub fn new(input: &EthernetPacket, id: usize) -> Option<Self> {
+    pub fn new(input: &EthernetPacket) -> Option<Self> {
         let ipv4 = Ipv4Packet::new(input.payload())?;
         if let Some(tcp) = TcpPacket::new(ipv4.payload()) {
             return Some(Self {
-                id,
                 a_port: tcp.get_source(),
                 b_port: tcp.get_destination(),
                 a_ip: ipv4.get_source(),
@@ -224,7 +219,6 @@ impl StreamInfo {
             });
         } else if let Some(udp) = UdpPacket::new(ipv4.payload()) {
             return Some(Self {
-                id,
                 a_port: udp.get_source(),
                 b_port: udp.get_destination(),
                 a_ip: ipv4.get_source(),
@@ -236,7 +230,6 @@ impl StreamInfo {
         }
 
         Some(Self {
-            id,
             a_port: 0,
             b_port: 0,
             a_ip: ipv4.get_source(),
@@ -304,16 +297,20 @@ impl PPacket {
 
 #[derive(Debug, Clone)]
 struct Stream {
+    /// Unique stream id. We embed this here
+    /// to avoid an implicit dependency between the order we saw this Stream
+    /// and the order in which it is stored in a datastructure.
+    id: usize,
     info: StreamInfo,
     packets: Vec<PPacket>,
 }
 
 impl Stream {
     /// Generate a new Stream struct
-    pub fn new(info: StreamInfo, packet: PPacket) -> Stream {
+    pub fn new(id: usize, info: StreamInfo, packet: PPacket) -> Stream {
         let packets = vec![packet];
 
-        Self { info, packets }
+        Self { id, info, packets }
     }
 
     /// Add a captured packet to the Stream and also update the StreamInfo
@@ -348,7 +345,7 @@ fn exec_list(opt: ListOpt) {
             for stream in output.iter() {
                 println!(
                     "{}: {} Packets: {}",
-                    stream.info.id,
+                    stream.id,
                     stream.info,
                     stream.packets.len()
                 );
@@ -385,7 +382,7 @@ fn exec_scan(opt: ScanOpt) {
             for stream in output.iter() {
                 println!(
                     "{}: {} Packets: {}",
-                    stream.info.id,
+                    stream.id,
                     stream.info,
                     stream.packets.len()
                 );
@@ -415,6 +412,38 @@ fn exec_extract_tcpstreams(opt: ExtractOpt) {
     }
 }
 
+/// Used internally in read_pcap to identify a stream for quick lookups
+#[derive(Ord, PartialOrd, PartialEq, Eq)]
+struct StreamKey {
+    ips: [Ipv4Addr; 2],
+    ports: [u16; 2],
+    macs: [MacAddr; 2],
+    packet_type: PacketType,
+}
+impl StreamKey {
+    fn new(
+        ip_a: Ipv4Addr,
+        port_a: u16,
+        mac_a: MacAddr,
+        ip_b: Ipv4Addr,
+        port_b: u16,
+        mac_b: MacAddr,
+        packet_type: PacketType,
+    ) -> Self {
+        let mut ips = [ip_a, ip_b];
+        ips.sort();
+        let mut ports = [port_a, port_b];
+        ports.sort();
+        let mut macs = [mac_a, mac_b];
+        macs.sort();
+        Self {
+            ips,
+            ports,
+            macs,
+            packet_type,
+        }
+    }
+}
 fn read_pcap(input: &str) -> Option<(PcapHeader, Vec<Stream>)> {
     let file_in = File::open(input).expect("Error opening file");
     let mut pcap_reader = PcapReader::new(file_in).unwrap();
@@ -424,7 +453,7 @@ fn read_pcap(input: &str) -> Option<(PcapHeader, Vec<Stream>)> {
 
     // We want to retain the order we saw each stream without having to sort the output vector.
     // This isn't as good as a HashMap, but it's a stdlib structure with support for this
-    let mut output: BTreeMap<StreamInfo, Stream> = BTreeMap::new();
+    let mut output: BTreeMap<StreamKey, Stream> = BTreeMap::new();
 
     // Iterate over each packet in the original pcap file
     let mut count = 0;
@@ -445,13 +474,25 @@ fn read_pcap(input: &str) -> Option<(PcapHeader, Vec<Stream>)> {
             // Validate it is an IPv4 packet
             if eth.get_ethertype() == EtherTypes::Ipv4 {
                 // Validate it is a TCP packet and we have extracted it
-                if let Some(si) = StreamInfo::new(&eth, count) {
-                    if let Some(s) = output.get_mut(&si) {
+                if let Some(si) = StreamInfo::new(&eth) {
+                    let key = StreamKey::new(
+                        si.a_ip,
+                        si.a_port,
+                        si.a_mac,
+                        si.b_ip,
+                        si.b_port,
+                        si.b_mac,
+                        si.packet_type,
+                    );
+
+                    if let Some(s) = output.get_mut(&key) {
                         // Stream already exists. Extend it
                         s.add_and_update(si, packet);
                     } else {
-                        // No matching stream, create one.
-                        output.insert(si, Stream::new(si, packet));
+                        // No matching stream, create set it's id and store it
+                        if output.insert(key, Stream::new(count, si, packet)).is_some() {
+                            panic!("This should never happen");
+                        }
                     }
                 }
             }
@@ -521,7 +562,7 @@ fn write_pcap(
 
     // Iterate through every stream
     for stream in streams.iter() {
-        let streamid = stream.info.id;
+        let streamid = stream.id;
 
         if stream.info.packet_type != packet_type {
             continue;

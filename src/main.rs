@@ -349,8 +349,11 @@ fn exec_list(input: Receiver<(StreamKey, (StreamInfo, PPacket))>, opt: ListOpt) 
             info
         })
         .count();
+    
 
     if opt.count || opt.ports || opt.ip || opt.mac {
+        // We want things sorted
+        counts.sort();
         if opt.count {
             counts.print_comms();
         }

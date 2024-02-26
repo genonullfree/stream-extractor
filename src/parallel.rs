@@ -2,32 +2,29 @@ use std::{
     collections::HashMap,
     fs::File,
     io::{self, Read, Write},
-    net::Ipv4Addr,
+    net::IpAddr,
     sync::mpsc::Sender,
 };
 
 use pcap_file::pcap::{PcapHeader, PcapReader, PcapWriter};
-use pnet::{
-    packet::ethernet::{EtherTypes, EthernetPacket},
-    util::MacAddr,
-};
+use pnet::{packet::ethernet::EthernetPacket, util::MacAddr};
 
 use crate::{PPacket, PacketType, StreamInfo};
 
 /// Used internally in read_pcap to identify a stream for quick lookups
 #[derive(Ord, PartialOrd, PartialEq, Eq, Hash, Clone)]
 pub struct StreamKey {
-    ips: [Ipv4Addr; 2],
+    ips: [IpAddr; 2],
     ports: [u16; 2],
     macs: [MacAddr; 2],
     packet_type: PacketType,
 }
 impl StreamKey {
     pub fn new(
-        ip_a: Ipv4Addr,
+        ip_a: IpAddr,
         port_a: u16,
         mac_a: MacAddr,
-        ip_b: Ipv4Addr,
+        ip_b: IpAddr,
         port_b: u16,
         mac_b: MacAddr,
         packet_type: PacketType,
@@ -69,34 +66,31 @@ pub fn read_pcaps<R: Read>(
 
         // Validate it is an Ethernet packet
         if let Some(eth) = EthernetPacket::new(&pkt.data) {
-            // Validate it is an IPv4 packet
-            if eth.get_ethertype() == EtherTypes::Ipv4 {
-                // Validate it is a TCP packet and we have extracted it
-                if let Some(mut si) = StreamInfo::new(&eth, count, packet.data.len()) {
-                    let key = StreamKey::new(
-                        si.a_ip,
-                        si.a_port,
-                        si.a_mac,
-                        si.b_ip,
-                        si.b_port,
-                        si.b_mac,
-                        si.packet_type,
-                    );
+            // Validate it is a TCP packet and we have extracted it
+            if let Some(mut si) = StreamInfo::new(&eth, count, packet.data.len()) {
+                let key = StreamKey::new(
+                    si.a_ip,
+                    si.a_port,
+                    si.a_mac,
+                    si.b_ip,
+                    si.b_port,
+                    si.b_mac,
+                    si.packet_type,
+                );
 
-                    match seen_streams.get_mut(&key) {
-                        Some(id) => {
-                            // Stream is already seen. Grab info from map and send it on Sender
-                            si.id = *id;
-                            destination.send((key, (si, packet))).unwrap();
-                        }
-                        None => {
-                            // We have never seen this stream before. Create an entry for it and pass it on
-                            let id = seen_streams.len();
-                            si.id = id;
+                match seen_streams.get_mut(&key) {
+                    Some(id) => {
+                        // Stream is already seen. Grab info from map and send it on Sender
+                        si.id = *id;
+                        destination.send((key, (si, packet))).unwrap();
+                    }
+                    None => {
+                        // We have never seen this stream before. Create an entry for it and pass it on
+                        let id = seen_streams.len();
+                        si.id = id;
 
-                            seen_streams.insert(key.clone(), id);
-                            destination.send((key, (si, packet))).unwrap();
-                        }
+                        seen_streams.insert(key.clone(), id);
+                        destination.send((key, (si, packet))).unwrap();
                     }
                 }
             }

@@ -5,8 +5,11 @@ use parallel::StreamKey;
 use pcap_file::pcap::PcapHeader;
 use pcap_file::pcap::PcapPacket;
 use pcap_file::pcap::PcapReader;
+use pnet::packet::ethernet::EtherTypes;
 use pnet::packet::ethernet::EthernetPacket;
+use pnet::packet::ip::IpNextHeaderProtocols;
 use pnet::packet::ipv4::Ipv4Packet;
+use pnet::packet::ipv6::Ipv6Packet;
 use pnet::packet::tcp::TcpPacket;
 use pnet::packet::udp::UdpPacket;
 use pnet::packet::Packet;
@@ -14,7 +17,7 @@ use pnet::util::MacAddr;
 use std::collections::HashSet;
 use std::fmt;
 use std::fs::File;
-use std::net::Ipv4Addr;
+use std::net::IpAddr;
 use std::sync::mpsc::channel;
 use std::sync::mpsc::Receiver;
 use std::thread;
@@ -31,8 +34,8 @@ struct StreamInfo {
     id: usize,
     a_port: u16,
     b_port: u16,
-    a_ip: Ipv4Addr,
-    b_ip: Ipv4Addr,
+    a_ip: IpAddr,
+    b_ip: IpAddr,
     a_mac: MacAddr,
     b_mac: MacAddr,
     packet_type: PacketType,
@@ -43,7 +46,7 @@ struct StreamInfo {
 enum PacketType {
     Tcp,
     Udp,
-    Ipv4,
+    Other,
 }
 
 #[derive(Default, Clone)]
@@ -51,9 +54,9 @@ struct StreamCounts {
     seen: HashSet<StreamKey>,
     tcp: usize,
     udp: usize,
-    ipv4: usize,
+    other: usize,
     ports: Vec<u16>,
-    ipaddrs: Vec<Ipv4Addr>,
+    ipaddrs: Vec<IpAddr>,
     macs: Vec<MacAddr>,
 }
 
@@ -75,7 +78,7 @@ impl StreamCounts {
             match info.packet_type {
                 PacketType::Tcp => self.tcp += 1,
                 PacketType::Udp => self.udp += 1,
-                PacketType::Ipv4 => self.ipv4 += 1,
+                PacketType::Other => self.other += 1,
             };
 
             if !self.ports.contains(&info.a_port) {
@@ -111,8 +114,8 @@ impl StreamCounts {
 
     pub fn print_comms(&self) {
         println!(
-            "TCP stream count: {}\nUDP communications count: {}\nIPv4 pair count: {}\nUnique ports: {}\nUnique IP addresses: {}\nUnique MAC addresses: {}",
-            self.tcp, self.udp, self.ipv4, self.ports.len(), self.ipaddrs.len(), self.macs.len(),
+            "TCP stream count: {}\nUDP communications count: {}\nOther protos count: {}\nUnique ports: {}\nUnique IP addresses: {}\nUnique MAC addresses: {}",
+            self.tcp, self.udp, self.other, self.ports.len(), self.ipaddrs.len(), self.macs.len(),
         );
     }
 
@@ -166,7 +169,7 @@ struct ExtractOpt {
 
     /// Filter output files to ones that contain the specified IP addresses
     #[arg(long)]
-    ip: Option<Vec<Ipv4Addr>>,
+    ip: Option<Vec<IpAddr>>,
 
     /// Filter output files to ones that contain the specified MAC addresses
     #[arg(short, long)]
@@ -208,7 +211,7 @@ struct ScanOpt {
 
     /// Search PCAP to see if any of provided addresss is present
     #[arg(long)]
-    ip: Option<Vec<Ipv4Addr>>,
+    ip: Option<Vec<IpAddr>>,
 
     /// Search PCAP to see if any of provided MAC address is present
     #[arg(short, long)]
@@ -226,45 +229,67 @@ struct ScanOpt {
 impl StreamInfo {
     /// Attempt to generate a new StreamInfo from an Ethernet packet payload
     pub fn new(input: &EthernetPacket, id: usize, size: usize) -> Option<Self> {
-        let ipv4 = Ipv4Packet::new(input.payload())?;
-        if let Some(tcp) = TcpPacket::new(ipv4.payload()) {
-            return Some(Self {
-                id,
-                a_port: tcp.get_source(),
-                b_port: tcp.get_destination(),
-                a_ip: ipv4.get_source(),
-                b_ip: ipv4.get_destination(),
-                a_mac: input.get_source(),
-                b_mac: input.get_destination(),
-                packet_type: PacketType::Tcp,
-                size,
-            });
-        } else if let Some(udp) = UdpPacket::new(ipv4.payload()) {
-            return Some(Self {
-                id,
+        let ethertype = input.get_ethertype();
 
-                a_port: udp.get_source(),
-                b_port: udp.get_destination(),
-                a_ip: ipv4.get_source(),
-                b_ip: ipv4.get_destination(),
-                a_mac: input.get_source(),
-                b_mac: input.get_destination(),
-                packet_type: PacketType::Udp,
-                size,
-            });
+        let next_proto = if ethertype == EtherTypes::Ipv4 {
+            let packet = Ipv4Packet::new(input.payload())?;
+            let source: IpAddr = packet.get_source().into();
+            let dest: IpAddr = packet.get_destination().into();
+
+            Some((packet.get_next_level_protocol(), source, dest))
+        } else if ethertype == EtherTypes::Ipv6 {
+            let packet = Ipv6Packet::new(input.payload())?;
+            let source: IpAddr = packet.get_source().into();
+            let dest: IpAddr = packet.get_destination().into();
+            Some((packet.get_next_header(), source, dest))
+        } else {
+            None
+        };
+
+        if let Some((proto, source, destination)) = next_proto {
+            if proto == IpNextHeaderProtocols::Tcp {
+                let tcp = TcpPacket::new(input.payload())?;
+                return Some(Self {
+                    id,
+                    a_port: tcp.get_source(),
+                    b_port: tcp.get_destination(),
+                    a_ip: source,
+                    b_ip: destination,
+                    a_mac: input.get_source(),
+                    b_mac: input.get_destination(),
+                    packet_type: PacketType::Tcp,
+                    size,
+                });
+            } else if proto == IpNextHeaderProtocols::Udp {
+                let udp = UdpPacket::new(input.payload())?;
+                return Some(Self {
+                    id,
+                    a_port: udp.get_source(),
+                    b_port: udp.get_destination(),
+                    a_ip: source,
+                    b_ip: destination,
+                    a_mac: input.get_source(),
+                    b_mac: input.get_destination(),
+                    packet_type: PacketType::Udp,
+                    size,
+                });
+            } else {
+                Some(Self {
+                    id,
+                    a_port: 0,
+                    b_port: 0,
+                    a_ip: source,
+                    b_ip: destination,
+                    a_mac: input.get_source(),
+                    b_mac: input.get_destination(),
+                    packet_type: PacketType::Other,
+                    size,
+                })
+            }
+        } else {
+            // It's something other than IPv4/IPv6.
+            None
         }
-
-        Some(Self {
-            id,
-            a_port: 0,
-            b_port: 0,
-            a_ip: ipv4.get_source(),
-            b_ip: ipv4.get_destination(),
-            a_mac: input.get_source(),
-            b_mac: input.get_destination(),
-            packet_type: PacketType::Ipv4,
-            size,
-        })
     }
 }
 
@@ -349,7 +374,6 @@ fn exec_list(input: Receiver<(StreamKey, (StreamInfo, PPacket))>, opt: ListOpt) 
             info
         })
         .count();
-    
 
     if opt.count || opt.ports || opt.ip || opt.mac {
         // We want things sorted
@@ -429,13 +453,13 @@ fn exec_extract_tcpstreams(
 struct Filter {
     matches: usize,
     ports: Option<Vec<u16>>,
-    ips: Option<Vec<Ipv4Addr>>,
+    ips: Option<Vec<IpAddr>>,
     macs: Option<Vec<MacAddr>>,
 }
 impl Filter {
     pub fn new(
         ports: Option<Vec<u16>>,
-        ips: Option<Vec<Ipv4Addr>>,
+        ips: Option<Vec<IpAddr>>,
         macs: Option<Vec<MacAddr>>,
     ) -> Self {
         Self {
@@ -457,7 +481,7 @@ impl Filter {
         }
     }
 
-    fn filter_ip(&mut self, ip: &[Ipv4Addr]) -> bool {
+    fn filter_ip(&mut self, ip: &[IpAddr]) -> bool {
         if let Some(ref ips) = self.ips {
             ip.iter().any(|x| ips.contains(x))
         } else {

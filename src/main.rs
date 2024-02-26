@@ -8,6 +8,7 @@ use pnet::packet::tcp::TcpPacket;
 use pnet::packet::udp::UdpPacket;
 use pnet::packet::Packet;
 use pnet::util::MacAddr;
+use std::collections::BTreeMap;
 use std::fmt;
 use std::fs::File;
 use std::io;
@@ -15,9 +16,13 @@ use std::io::Write;
 use std::net::Ipv4Addr;
 use std::time::Duration;
 
-/// Data that represents a TCP stream
-#[derive(Debug, Copy, Clone, PartialEq)]
+/// Data that represents a packet stream
+#[derive(Debug, Copy, Clone, Eq, PartialEq, PartialOrd, Ord)]
 struct StreamInfo {
+    /// Unique stream id. We embed this here
+    /// to avoid an implicit dependency between the order we saw this Stream
+    /// and the order in which it is stored in a datastructure.
+    id: usize,
     a_port: u16,
     b_port: u16,
     a_ip: Ipv4Addr,
@@ -27,7 +32,7 @@ struct StreamInfo {
     packet_type: PacketType,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, PartialOrd, Ord)]
 enum PacketType {
     Tcp,
     Udp,
@@ -204,10 +209,11 @@ struct ScanOpt {
 
 impl StreamInfo {
     /// Attempt to generate a new StreamInfo from an Ethernet packet payload
-    pub fn new(input: &EthernetPacket) -> Option<Self> {
+    pub fn new(input: &EthernetPacket, id: usize) -> Option<Self> {
         let ipv4 = Ipv4Packet::new(input.payload())?;
         if let Some(tcp) = TcpPacket::new(ipv4.payload()) {
             return Some(Self {
+                id,
                 a_port: tcp.get_source(),
                 b_port: tcp.get_destination(),
                 a_ip: ipv4.get_source(),
@@ -218,6 +224,7 @@ impl StreamInfo {
             });
         } else if let Some(udp) = UdpPacket::new(ipv4.payload()) {
             return Some(Self {
+                id,
                 a_port: udp.get_source(),
                 b_port: udp.get_destination(),
                 a_ip: ipv4.get_source(),
@@ -229,6 +236,7 @@ impl StreamInfo {
         }
 
         Some(Self {
+            id,
             a_port: 0,
             b_port: 0,
             a_ip: ipv4.get_source(),
@@ -237,25 +245,6 @@ impl StreamInfo {
             b_mac: input.get_destination(),
             packet_type: PacketType::Ipv4,
         })
-    }
-
-    /// Validate if the current stream is the same as the other stream
-    pub fn is_stream(&self, other: &StreamInfo) -> bool {
-        self.same_ports(other) && self.same_ips(other) && self.same_packet_type(other)
-    }
-
-    fn same_ports(&self, other: &StreamInfo) -> bool {
-        (self.a_port == other.a_port && self.b_port == other.b_port)
-            || (self.a_port == other.b_port && self.b_port == other.a_port)
-    }
-
-    fn same_ips(&self, other: &StreamInfo) -> bool {
-        (self.a_ip == other.a_ip && self.b_ip == other.b_ip)
-            || (self.a_ip == other.b_ip && self.b_ip == other.a_ip)
-    }
-
-    fn same_packet_type(&self, other: &StreamInfo) -> bool {
-        self.packet_type == other.packet_type
     }
 
     fn contains_port(&self, port: u16) -> bool {
@@ -337,11 +326,6 @@ impl Stream {
     pub fn add(&mut self, packet: PPacket) {
         self.packets.push(packet);
     }
-
-    /// Check if the StreamInfo matches the current stream
-    pub fn is_stream(&self, other: &StreamInfo) -> bool {
-        self.info.is_stream(other)
-    }
 }
 
 fn main() {
@@ -361,8 +345,13 @@ fn exec_list(opt: ListOpt) {
             return;
         }
         if opt.verbose {
-            for (n, stream) in output.iter().enumerate() {
-                println!("{n}: {} Packets: {}", stream.info, stream.packets.len());
+            for stream in output.iter() {
+                println!(
+                    "{}: {} Packets: {}",
+                    stream.info.id,
+                    stream.info,
+                    stream.packets.len()
+                );
             }
         }
         if opt.count || opt.ports || opt.ip || opt.mac {
@@ -393,8 +382,13 @@ fn exec_scan(opt: ScanOpt) {
             return;
         }
         if opt.verbose {
-            for (n, stream) in output.iter().enumerate() {
-                println!("{n}: {} Packets: {}", stream.info, stream.packets.len());
+            for stream in output.iter() {
+                println!(
+                    "{}: {} Packets: {}",
+                    stream.info.id,
+                    stream.info,
+                    stream.packets.len()
+                );
             }
         }
         if opt.count {
@@ -428,11 +422,13 @@ fn read_pcap(input: &str) -> Option<(PcapHeader, Vec<Stream>)> {
     // Save pcap header for later
     let header = pcap_reader.header();
 
-    let mut output = Vec::<Stream>::new();
+    // We want to retain the order we saw each stream without having to sort the output vector.
+    // This isn't as good as a HashMap, but it's a stdlib structure with support for this
+    let mut output: BTreeMap<StreamInfo, Stream> = BTreeMap::new();
 
     // Iterate over each packet in the original pcap file
     let mut count = 0;
-    'nextpkt: while let Some(pkt) = pcap_reader.next_packet() {
+    while let Some(pkt) = pcap_reader.next_packet() {
         count += 1;
         print!(
             "\rPackets processed: {count}, Connections detected: {}",
@@ -449,23 +445,13 @@ fn read_pcap(input: &str) -> Option<(PcapHeader, Vec<Stream>)> {
             // Validate it is an IPv4 packet
             if eth.get_ethertype() == EtherTypes::Ipv4 {
                 // Validate it is a TCP packet and we have extracted it
-                if let Some(si) = StreamInfo::new(&eth) {
-                    // If our list is empty, add it
-                    if output.is_empty() {
-                        output.push(Stream::new(si, packet));
-                        continue 'nextpkt;
+                if let Some(si) = StreamInfo::new(&eth, count) {
+                    if let Some(s) = output.get_mut(&si) {
+                        // Stream already exists. Extend it
+                        s.add_and_update(si, packet);
                     } else {
-                        // Iterate through our list of Streams
-                        // Add packet to Stream if we found a match
-                        for s in output.iter_mut() {
-                            if s.is_stream(&si) {
-                                s.add_and_update(si, packet);
-                                continue 'nextpkt;
-                            }
-                        }
-
-                        // If no stream matched, add a new Stream to our list
-                        output.push(Stream::new(si, packet));
+                        // No matching stream, create one.
+                        output.insert(si, Stream::new(si, packet));
                     }
                 }
             }
@@ -476,7 +462,7 @@ fn read_pcap(input: &str) -> Option<(PcapHeader, Vec<Stream>)> {
     if output.is_empty() {
         None
     } else {
-        Some((header, output))
+        Some((header, output.into_values().collect()))
     }
 }
 
@@ -534,12 +520,14 @@ fn write_pcap(
     }
 
     // Iterate through every stream
-    for (n, stream) in streams.iter().enumerate() {
+    for stream in streams.iter() {
+        let streamid = stream.info.id;
+
         if stream.info.packet_type != packet_type {
             continue;
         }
         // Open new file with the original pcap header
-        let filename = format!("{out}{n:04}.pcap");
+        let filename = format!("{out}{streamid:04}.pcap");
         let file = File::create(&filename).expect("Error opening output file");
         let mut pcap_writer = PcapWriter::with_header(file, header).expect("Error writing file");
 
@@ -550,7 +538,7 @@ fn write_pcap(
                 stream.packets.len()
             );
         } else {
-            print!("\rWriting output file: {}", n + 1,);
+            print!("\rWriting output file: {}", streamid,);
             io::stdout().flush().expect("Fatal IO error");
         }
 

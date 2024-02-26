@@ -106,20 +106,23 @@ impl StreamInfo {
             let packet = Ipv4Packet::new(input.payload())?;
             let source: IpAddr = packet.get_source().into();
             let dest: IpAddr = packet.get_destination().into();
+            let payload = packet.payload().to_vec();
 
-            Some((packet.get_next_level_protocol(), source, dest))
+            Some((packet.get_next_level_protocol(), source, dest, payload))
         } else if ethertype == EtherTypes::Ipv6 {
             let packet = Ipv6Packet::new(input.payload())?;
             let source: IpAddr = packet.get_source().into();
             let dest: IpAddr = packet.get_destination().into();
-            Some((packet.get_next_header(), source, dest))
+            let payload = packet.payload().to_vec();
+
+            Some((packet.get_next_header(), source, dest, payload))
         } else {
             None
         };
-        let (proto, source, destination) = next_proto?;
+        let (proto, source, destination, payload) = next_proto?;
 
         if proto == IpNextHeaderProtocols::Tcp {
-            let tcp = TcpPacket::new(input.payload())?;
+            let tcp = TcpPacket::new(&payload)?;
             Some(Self {
                 id,
                 a_port: tcp.get_source(),
@@ -132,7 +135,7 @@ impl StreamInfo {
                 size,
             })
         } else if proto == IpNextHeaderProtocols::Udp {
-            let udp = UdpPacket::new(input.payload())?;
+            let udp = UdpPacket::new(&payload)?;
             Some(Self {
                 id,
                 a_port: udp.get_source(),

@@ -12,6 +12,17 @@ keywords = ["pcap", "tcp", "stream"]
 categories = ["command-line-utilities", "network-programming"]
 exclude = ["sample"]
 
+[profile.release]
+codegen-units=1
+opt-level = 0
+lto = true
+strip=true
+overflow-checks = false
+debug = false
+debug-assertions = false
+panic="abort"
+incremental = true
+
 [dependencies]
 clap = { version = "4.1.8", features = ["derive"] }
 pcap-file = "2.0.0"

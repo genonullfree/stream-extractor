@@ -18,14 +18,13 @@ pub fn read_pcaps<R: Read>(
 
     // For statistics
     let mut count = 0;
-    // let mut stdout = io::stdout();
     while let Some(pkt) = input.next_packet() {
         count += 1;
         print!(
             "\rPackets processed: {count}, Connections detected: {}",
             seen_streams.len()
         );
-        io::stdout().flush().expect("Fatal IO error");
+        io::stdout().flush().expect("Fatal IO Error");
 
         // Extract each packet
         let pkt = pkt.unwrap();

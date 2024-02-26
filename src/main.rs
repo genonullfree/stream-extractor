@@ -1,136 +1,23 @@
 use clap::Parser;
-use parallel::read_pcaps;
-use parallel::write_pcaps;
-use parallel::StreamKey;
+use streaming::read_pcaps;
+use streaming::write_pcaps;
+use parsing::PPacket;
+use parsing::StreamInfo;
+use parsing::StreamKey;
 use pcap_file::pcap::PcapHeader;
-use pcap_file::pcap::PcapPacket;
 use pcap_file::pcap::PcapReader;
-use pnet::packet::ethernet::EtherTypes;
-use pnet::packet::ethernet::EthernetPacket;
-use pnet::packet::ip::IpNextHeaderProtocols;
-use pnet::packet::ipv4::Ipv4Packet;
-use pnet::packet::ipv6::Ipv6Packet;
-use pnet::packet::tcp::TcpPacket;
-use pnet::packet::udp::UdpPacket;
-use pnet::packet::Packet;
 use pnet::util::MacAddr;
-use std::collections::HashSet;
-use std::fmt;
 use std::fs::File;
 use std::net::IpAddr;
 use std::sync::mpsc::channel;
 use std::sync::mpsc::Receiver;
 use std::thread;
-use std::time::Duration;
 
-mod parallel;
+use crate::parsing::PacketType;
+use crate::parsing::StreamCounts;
 
-/// Data that represents a packet stream
-#[derive(Debug, Copy, Clone)]
-struct StreamInfo {
-    /// Unique stream id. We embed this here
-    /// to avoid an implicit dependency between the order we saw this Stream
-    /// and the order in which it is stored in a datastructure.
-    id: usize,
-    a_port: u16,
-    b_port: u16,
-    a_ip: IpAddr,
-    b_ip: IpAddr,
-    a_mac: MacAddr,
-    b_mac: MacAddr,
-    packet_type: PacketType,
-    size: usize,
-}
-
-#[derive(Debug, Copy, Clone, Eq, PartialEq, PartialOrd, Ord, Hash)]
-enum PacketType {
-    Tcp,
-    Udp,
-    Other,
-}
-
-#[derive(Default, Clone)]
-struct StreamCounts {
-    seen: HashSet<StreamKey>,
-    tcp: usize,
-    udp: usize,
-    other: usize,
-    ports: Vec<u16>,
-    ipaddrs: Vec<IpAddr>,
-    macs: Vec<MacAddr>,
-}
-
-impl StreamCounts {
-    /// Use StreamInfo to calculate statistics and give it back
-    /// Allowing data to be streamed through
-    pub fn tally(&mut self, info: StreamInfo) -> StreamInfo {
-        let key = StreamKey::new(
-            info.a_ip,
-            info.a_port,
-            info.a_mac,
-            info.b_ip,
-            info.b_port,
-            info.b_mac,
-            info.packet_type,
-        );
-        if !self.seen.contains(&key) {
-            self.seen.insert(key);
-            match info.packet_type {
-                PacketType::Tcp => self.tcp += 1,
-                PacketType::Udp => self.udp += 1,
-                PacketType::Other => self.other += 1,
-            };
-
-            if !self.ports.contains(&info.a_port) {
-                self.ports.push(info.a_port);
-            }
-
-            if !self.ports.contains(&info.b_port) {
-                self.ports.push(info.b_port);
-            }
-
-            if !self.ipaddrs.contains(&info.a_ip) {
-                self.ipaddrs.push(info.a_ip);
-            }
-
-            if !self.ipaddrs.contains(&info.b_ip) {
-                self.ipaddrs.push(info.b_ip);
-            }
-            if !self.macs.contains(&info.a_mac) {
-                self.macs.push(info.a_mac);
-            }
-            if !self.macs.contains(&info.b_mac) {
-                self.macs.push(info.b_mac);
-            }
-        }
-        info
-    }
-
-    pub fn sort(&mut self) {
-        self.ports.sort();
-        self.ipaddrs.sort();
-        self.macs.sort();
-    }
-
-    pub fn print_comms(&self) {
-        println!(
-            "TCP stream count: {}\nUDP communications count: {}\nOther protos count: {}\nUnique ports: {}\nUnique IP addresses: {}\nUnique MAC addresses: {}",
-            self.tcp, self.udp, self.other, self.ports.len(), self.ipaddrs.len(), self.macs.len(),
-        );
-    }
-
-    pub fn print_ports(&self) {
-        println!("Ports present: {:?}", self.ports);
-    }
-
-    pub fn print_ipaddrs(&self) {
-        println!("IP Addresses present: {:?}", self.ipaddrs);
-    }
-
-    pub fn print_macs(&self) {
-        println!("MAC Addresses present: {:?}", self.macs);
-    }
-}
+mod streaming;
+mod parsing;
 
 /// The TCP Stream Extractor will extract all TCP streams from a pcap and rewrite them into separate pcap files
 #[derive(Debug, Clone, Parser)]
@@ -226,116 +113,6 @@ struct ScanOpt {
     verbose: bool,
 }
 
-impl StreamInfo {
-    /// Attempt to generate a new StreamInfo from an Ethernet packet payload
-    pub fn new(input: &EthernetPacket, id: usize, size: usize) -> Option<Self> {
-        let ethertype = input.get_ethertype();
-
-        let next_proto = if ethertype == EtherTypes::Ipv4 {
-            let packet = Ipv4Packet::new(input.payload())?;
-            let source: IpAddr = packet.get_source().into();
-            let dest: IpAddr = packet.get_destination().into();
-
-            Some((packet.get_next_level_protocol(), source, dest))
-        } else if ethertype == EtherTypes::Ipv6 {
-            let packet = Ipv6Packet::new(input.payload())?;
-            let source: IpAddr = packet.get_source().into();
-            let dest: IpAddr = packet.get_destination().into();
-            Some((packet.get_next_header(), source, dest))
-        } else {
-            None
-        };
-
-        if let Some((proto, source, destination)) = next_proto {
-            if proto == IpNextHeaderProtocols::Tcp {
-                let tcp = TcpPacket::new(input.payload())?;
-                return Some(Self {
-                    id,
-                    a_port: tcp.get_source(),
-                    b_port: tcp.get_destination(),
-                    a_ip: source,
-                    b_ip: destination,
-                    a_mac: input.get_source(),
-                    b_mac: input.get_destination(),
-                    packet_type: PacketType::Tcp,
-                    size,
-                });
-            } else if proto == IpNextHeaderProtocols::Udp {
-                let udp = UdpPacket::new(input.payload())?;
-                return Some(Self {
-                    id,
-                    a_port: udp.get_source(),
-                    b_port: udp.get_destination(),
-                    a_ip: source,
-                    b_ip: destination,
-                    a_mac: input.get_source(),
-                    b_mac: input.get_destination(),
-                    packet_type: PacketType::Udp,
-                    size,
-                });
-            } else {
-                Some(Self {
-                    id,
-                    a_port: 0,
-                    b_port: 0,
-                    a_ip: source,
-                    b_ip: destination,
-                    a_mac: input.get_source(),
-                    b_mac: input.get_destination(),
-                    packet_type: PacketType::Other,
-                    size,
-                })
-            }
-        } else {
-            // It's something other than IPv4/IPv6.
-            None
-        }
-    }
-}
-
-impl fmt::Display for StreamInfo {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            f,
-            "MAC Addresses: [{}, {}] IP Addresses: [{}, {}] Ports: [{}, {}] {:?}",
-            self.a_mac,
-            self.b_mac,
-            self.a_ip,
-            self.b_ip,
-            self.a_port,
-            self.b_port,
-            self.packet_type,
-        )
-    }
-}
-
-/// Temporary data structure that contains the minumum amount of data to reconstruct the pcap
-#[derive(Debug, Clone)]
-struct PPacket {
-    ts: Duration,
-    data: Vec<u8>,
-}
-
-impl PPacket {
-    /// Generate a new PPacket from a pcap_file::PcapPacket
-    pub fn new(packet: &PcapPacket) -> Self {
-        Self {
-            ts: packet.timestamp,
-            data: packet.data.to_vec(),
-        }
-    }
-
-    /// Get the length of the captured packet data
-    pub fn len(&self) -> u32 {
-        self.data.len().try_into().unwrap()
-    }
-
-    /// Export a PPacket as a pcap_file::PcapPacket
-    pub fn to_pcap_packet(&self) -> PcapPacket {
-        PcapPacket::new(self.ts, self.len(), &self.data)
-    }
-}
-
 fn main() {
     let opt = Opt::parse();
 
@@ -395,7 +172,7 @@ fn exec_list(input: Receiver<(StreamKey, (StreamInfo, PPacket))>, opt: ListOpt) 
 
 fn exec_scan(input: Receiver<(StreamKey, (StreamInfo, PPacket))>, opt: ScanOpt) {
     let mut counts = StreamCounts::default();
-    let mut filter = Filter::new(opt.port, opt.ip, opt.mac);
+    let mut filter = Filter::new(opt.port, opt.ip, opt.mac, None);
 
     input
         .into_iter()
@@ -404,9 +181,7 @@ fn exec_scan(input: Receiver<(StreamKey, (StreamInfo, PPacket))>, opt: ScanOpt) 
             info
         })
         .filter(|info| {
-            let res = filter.filter_ip(&[info.a_ip, info.b_ip])
-                && filter.filter_port(&[info.a_port, info.b_port])
-                && filter.filter_mac(&[info.a_mac, info.b_mac]);
+            let res = filter.filter(&info);
             if res {
                 filter.bump();
             }
@@ -434,17 +209,21 @@ fn exec_extract_tcpstreams(
     header: PcapHeader,
     opt: ExtractOpt,
 ) {
-    let mut filter = Filter::new(opt.port, opt.ip, opt.mac);
-    let iter = input.into_iter().filter(|x| {
-        let (_, (info, _)) = x;
-        let res = filter.filter_ip(&[info.a_ip, info.b_ip])
-            && filter.filter_port(&[info.a_port, info.b_port])
-            && filter.filter_mac(&[info.a_mac, info.b_mac]);
-        if res {
-            filter.bump();
-        }
-        res
-    });
+    let mut filter = Filter::new(opt.port, opt.ip, opt.mac, Some([PacketType::Tcp].to_vec()));
+    let iter = input
+        .into_iter()
+        .filter(|x| {
+            let (_, (info, _)) = x;
+            let res = filter.filter(&info);
+            if res {
+                filter.bump();
+            }
+            res
+        })
+        .filter(|x| {
+            let (_, (info, _)) = x;
+            matches!(info.packet_type, PacketType::Tcp)
+        });
 
     write_pcaps(header, &opt.output, iter);
     println!("Number of streams that matched filters: {}", filter.matches);
@@ -455,24 +234,41 @@ struct Filter {
     ports: Option<Vec<u16>>,
     ips: Option<Vec<IpAddr>>,
     macs: Option<Vec<MacAddr>>,
+    protos: Option<Vec<PacketType>>,
 }
 impl Filter {
     pub fn new(
         ports: Option<Vec<u16>>,
         ips: Option<Vec<IpAddr>>,
         macs: Option<Vec<MacAddr>>,
+        protos: Option<Vec<PacketType>>,
     ) -> Self {
         Self {
             matches: 0,
             ports,
             ips,
             macs,
+            protos,
         }
+    }
+    pub fn filter(&self, info: &StreamInfo) -> bool {
+        self.filter_ip(&[info.a_ip, info.b_ip])
+            && self.filter_port(&[info.a_port, info.b_port])
+            && self.filter_mac(&[info.a_mac, info.b_mac])
+            && self.filter_proto(&[info.packet_type])
     }
     pub fn bump(&mut self) {
         self.matches += 1;
     }
-    fn filter_port(&mut self, port: &[u16]) -> bool {
+    fn filter_proto(&self, proto: &[PacketType]) -> bool {
+        if let Some(ref protos) = self.protos {
+            proto.iter().any(|x| protos.contains(x))
+        } else {
+            // Default to allowed if no filter is set
+            true
+        }
+    }
+    fn filter_port(&self, port: &[u16]) -> bool {
         if let Some(ref ports) = self.ports {
             port.iter().any(|x| ports.contains(x))
         } else {
@@ -481,7 +277,7 @@ impl Filter {
         }
     }
 
-    fn filter_ip(&mut self, ip: &[IpAddr]) -> bool {
+    fn filter_ip(&self, ip: &[IpAddr]) -> bool {
         if let Some(ref ips) = self.ips {
             ip.iter().any(|x| ips.contains(x))
         } else {
@@ -490,7 +286,7 @@ impl Filter {
         }
     }
 
-    fn filter_mac(&mut self, mac: &[MacAddr]) -> bool {
+    fn filter_mac(&self, mac: &[MacAddr]) -> bool {
         if let Some(ref macs) = self.macs {
             mac.iter().any(|x| macs.contains(&x))
         } else {

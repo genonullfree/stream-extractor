@@ -2,47 +2,13 @@ use std::{
     collections::HashMap,
     fs::File,
     io::{self, Read, Write},
-    net::IpAddr,
     sync::mpsc::Sender,
 };
 
 use pcap_file::pcap::{PcapHeader, PcapReader, PcapWriter};
-use pnet::{packet::ethernet::EthernetPacket, util::MacAddr};
+use pnet::packet::ethernet::EthernetPacket;
 
-use crate::{PPacket, PacketType, StreamInfo};
-
-/// Used internally in read_pcap to identify a stream for quick lookups
-#[derive(Ord, PartialOrd, PartialEq, Eq, Hash, Clone)]
-pub struct StreamKey {
-    ips: [IpAddr; 2],
-    ports: [u16; 2],
-    macs: [MacAddr; 2],
-    packet_type: PacketType,
-}
-impl StreamKey {
-    pub fn new(
-        ip_a: IpAddr,
-        port_a: u16,
-        mac_a: MacAddr,
-        ip_b: IpAddr,
-        port_b: u16,
-        mac_b: MacAddr,
-        packet_type: PacketType,
-    ) -> Self {
-        let mut ips = [ip_a, ip_b];
-        ips.sort();
-        let mut ports = [port_a, port_b];
-        ports.sort();
-        let mut macs = [mac_a, mac_b];
-        macs.sort();
-        Self {
-            ips,
-            ports,
-            macs,
-            packet_type,
-        }
-    }
-}
+use crate::parsing::{PPacket, StreamInfo, StreamKey};
 
 pub fn read_pcaps<R: Read>(
     mut input: PcapReader<R>,
@@ -52,6 +18,7 @@ pub fn read_pcaps<R: Read>(
 
     // For statistics
     let mut count = 0;
+    // let mut stdout = io::stdout();
     while let Some(pkt) = input.next_packet() {
         count += 1;
         print!(

@@ -1,6 +1,6 @@
 # Stream Extractor
 
-The TCP Stream Extractor is a small utility that can read in a PCAP file, search through it for TCP streams, and write out each stream to a separate new PCAP file.
+The Stream Extractor is a small utility that can read in a PCAP file, search through it for TCP and UDP streams, and write out each stream to a separate new PCAP file.
 
 ## Usage
 
@@ -8,7 +8,7 @@ The TCP Stream Extractor is a small utility that can read in a PCAP file, search
 Usage: stream-extractor <COMMAND>
 
 Commands:
-  extract  Extract TCP streams from a PCAP
+  extract  Extract TCP and UDP streams from a PCAP
   scan     Scan the PCAP and search for an IP or Port
   list     List all of the PCAP communication info
   help     Print this message or the help of the given subcommand(s)
@@ -24,11 +24,11 @@ Options:
 Usage: stream-extractor extract [OPTIONS] --input <INPUT>
 
 Options:
-  -i, --input <INPUT>    Input pcap file to extract TCP streams from
+  -i, --input <INPUT>    Input pcap file to extract TCP and UDP streams from
   -o, --output <OUTPUT>  Output name template [default: output_]
   -p, --port <PORT>      Filter output files to ones that contain the specified port number
       --ip <IP>          Filter output files to ones that contain the specified IP address
-  -v, --verbose          Enable verbose mode to print TCP stream info for each output PCAP file
+  -v, --verbose          Enable verbose mode to print stream info for each output PCAP file
   -h, --help             Print help
 ```
 
@@ -64,7 +64,7 @@ Options:
 
 ## Filter Options
 
-The filter options `--port`, `--ip`, and `--mac` are available to allow you to only write out the detected TCP streams that match the filter values. This can help simplify
+The filter options `--port`, `--ip`, and `--mac` are available to allow you to only write out the detected streams that match the filter values. This can help simplify
 the research step of identifying exactly which streams you may be interested in.
 
 Example:

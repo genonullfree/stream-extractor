@@ -3,6 +3,7 @@ use pcap_file::pcap::PcapHeader;
 use pcap_file::pcap::PcapPacket;
 use pcap_file::pcap::{PcapReader, PcapWriter};
 use pnet::packet::ethernet::{EtherTypes, EthernetPacket};
+use pnet::packet::ip::IpNextHeaderProtocols;
 use pnet::packet::ipv4::Ipv4Packet;
 use pnet::packet::tcp::TcpPacket;
 use pnet::packet::udp::UdpPacket;
@@ -205,38 +206,50 @@ struct ScanOpt {
 impl StreamInfo {
     /// Attempt to generate a new StreamInfo from an Ethernet packet payload
     pub fn new(input: &EthernetPacket) -> Option<Self> {
-        let ipv4 = Ipv4Packet::new(input.payload())?;
-        if let Some(tcp) = TcpPacket::new(ipv4.payload()) {
-            return Some(Self {
-                a_port: tcp.get_source(),
-                b_port: tcp.get_destination(),
-                a_ip: ipv4.get_source(),
-                b_ip: ipv4.get_destination(),
-                a_mac: input.get_source(),
-                b_mac: input.get_destination(),
-                packet_type: PacketType::Tcp,
-            });
-        } else if let Some(udp) = UdpPacket::new(ipv4.payload()) {
-            return Some(Self {
-                a_port: udp.get_source(),
-                b_port: udp.get_destination(),
-                a_ip: ipv4.get_source(),
-                b_ip: ipv4.get_destination(),
-                a_mac: input.get_source(),
-                b_mac: input.get_destination(),
-                packet_type: PacketType::Udp,
-            });
+        // Currently we only support Ipv4
+        if input.get_ethertype() != EtherTypes::Ipv4 {
+            return None;
         }
 
-        Some(Self {
-            a_port: 0,
-            b_port: 0,
-            a_ip: ipv4.get_source(),
-            b_ip: ipv4.get_destination(),
-            a_mac: input.get_source(),
-            b_mac: input.get_destination(),
-            packet_type: PacketType::Ipv4,
-        })
+        // Currently we only extract TCP and UDP ports
+        let ipv4 = Ipv4Packet::new(input.payload())?;
+        let packet = match ipv4.get_next_level_protocol() {
+            IpNextHeaderProtocols::Tcp => {
+                let tcp = TcpPacket::new(ipv4.payload())?;
+                Some(Self {
+                    a_port: tcp.get_source(),
+                    b_port: tcp.get_destination(),
+                    a_ip: ipv4.get_source(),
+                    b_ip: ipv4.get_destination(),
+                    a_mac: input.get_source(),
+                    b_mac: input.get_destination(),
+                    packet_type: PacketType::Tcp,
+                })
+            }
+            IpNextHeaderProtocols::Udp => {
+                let udp = UdpPacket::new(ipv4.payload())?;
+                Some(Self {
+                    a_port: udp.get_source(),
+                    b_port: udp.get_destination(),
+                    a_ip: ipv4.get_source(),
+                    b_ip: ipv4.get_destination(),
+                    a_mac: input.get_source(),
+                    b_mac: input.get_destination(),
+                    packet_type: PacketType::Udp,
+                })
+            }
+            _ => Some(Self {
+                a_port: 0,
+                b_port: 0,
+                a_ip: ipv4.get_source(),
+                b_ip: ipv4.get_destination(),
+                a_mac: input.get_source(),
+                b_mac: input.get_destination(),
+                packet_type: PacketType::Ipv4,
+            }),
+        };
+
+        packet
     }
 
     /// Validate if the current stream is the same as the other stream

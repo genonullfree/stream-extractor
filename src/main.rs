@@ -124,6 +124,28 @@ enum Cmd {
 
     /// List all of the PCAP communication info
     List(ListOpt),
+
+    /// Export a specific stream to JSON
+    Hex(HexOpt),
+}
+
+#[derive(Debug, Clone, Parser)]
+struct HexOpt {
+    /// Input pcap file to extract TCP streams from
+    #[arg(short, long, required = true)]
+    input: String,
+
+    /// Output name
+    #[arg(short, long, default_value = "output.hex")]
+    output: String,
+
+    /// Select stream to export
+    #[arg(short, long, default_value_t = 0)]
+    stream: usize,
+
+    /// Enable verbose mode to print stream info for each exported packet
+    #[arg(short, long)]
+    verbose: bool,
 }
 
 #[derive(Debug, Clone, Parser)]
@@ -355,6 +377,22 @@ impl Stream {
     pub fn is_stream(&self, other: &StreamInfo) -> bool {
         self.info.is_stream(other)
     }
+
+    /// Extract the data from the packets
+    pub fn extract_data(&self) -> Vec<Vec<u8>> {
+        let ofs = match self.info.packet_type {
+            PacketType::Udp => 0x29,
+            PacketType::Tcp => 0x36,
+            PacketType::Ipv4 => 0x00,
+        };
+
+        let mut out = Vec::<Vec<u8>>::new();
+        for packet in &self.packets {
+            out.push(packet.data[ofs..].to_vec());
+        }
+
+        out
+    }
 }
 
 fn main() {
@@ -364,7 +402,27 @@ fn main() {
         Cmd::Extract(ext) => exec_extract_tcpstreams(ext),
         Cmd::List(list) => exec_list(list),
         Cmd::Scan(scan) => exec_scan(scan),
+        Cmd::Hex(hex) => exec_hex(hex),
     };
+}
+
+fn exec_hex(opt: HexOpt) {
+    if let Some((_, output)) = read_pcap(&opt.input) {
+        if output.is_empty() {
+            println!("No streams present.");
+            return;
+        }
+        if let Some(stream) = filter_stream(output, opt.stream) {
+            println!("Selected stream packets: {}", stream.packets.len());
+            let mut file = File::create(&opt.output).expect("Error opening output file");
+            let data = stream.extract_data();
+            println!("Writing {} packet payloads as hex to {}", data.len(), &opt.output);
+            for i in data {
+                file.write_all(hex::encode(i).as_bytes()).expect("Error writing data");
+                file.write_all(b"\n").expect("Error writing newline");
+            }
+        }
+    }
 }
 
 fn exec_list(opt: ListOpt) {
@@ -490,6 +548,14 @@ fn read_pcap(input: &str) -> Option<(PcapHeader, Vec<Stream>)> {
         None
     } else {
         Some((header, output))
+    }
+}
+
+fn filter_stream(streams: Vec<Stream>, stream_n: usize) -> Option<Stream> {
+    if stream_n < streams.len() {
+        Some(streams[stream_n].clone())
+    } else {
+        None
     }
 }
 

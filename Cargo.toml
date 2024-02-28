@@ -14,5 +14,6 @@ exclude = ["sample"]
 
 [dependencies]
 clap = { version = "4.1.8", features = ["derive"] }
+hex = "0.4.3"
 pcap-file = "2.0.0"
 pnet = "0.33.0"

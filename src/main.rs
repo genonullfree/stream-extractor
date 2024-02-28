@@ -125,13 +125,13 @@ enum Cmd {
     /// List all of the PCAP communication info
     List(ListOpt),
 
-    /// Export a specific stream to JSON
+    /// Export a specific stream to ASCII hex lines
     Hex(HexOpt),
 }
 
 #[derive(Debug, Clone, Parser)]
 struct HexOpt {
-    /// Input pcap file to extract TCP streams from
+    /// Input pcap file to extract streams from
     #[arg(short, long, required = true)]
     input: String,
 
@@ -388,7 +388,9 @@ impl Stream {
 
         let mut out = Vec::<Vec<u8>>::new();
         for packet in &self.packets {
-            out.push(packet.data[ofs..].to_vec());
+            if !packet.data[ofs..].is_empty() {
+                out.push(packet.data[ofs..].to_vec());
+            }
         }
 
         out

@@ -136,12 +136,16 @@ struct HexOpt {
     input: String,
 
     /// Output name
-    #[arg(short, long, default_value = "output.hex")]
+    #[arg(short, long, default_value = "output_")]
     output: String,
 
     /// Select stream to export
-    #[arg(short, long, default_value_t = 0)]
-    stream: usize,
+    #[arg(short, long)]
+    stream: Option<usize>,
+
+    /// Filter output files to ones that contain the specified port number
+    #[arg(short, long)]
+    port: Option<u16>,
 
     /// Enable verbose mode to print stream info for each exported packet
     #[arg(short, long)]
@@ -409,16 +413,23 @@ fn main() {
 }
 
 fn exec_hex(opt: HexOpt) {
-    if let Some((_, output)) = read_pcap(&opt.input) {
+    if let Some((_, mut output)) = read_pcap(&opt.input) {
         if output.is_empty() {
             println!("No streams present.");
             return;
         }
-        if let Some(stream) = filter_stream(output, opt.stream) {
+
+        output = filter_port(output, opt.port);
+        if let Some(s) = opt.stream {
+            output = filter_stream(output, s);
+        }
+
+        for (n, stream) in output.iter().enumerate() {
             println!("Selected stream packets: {}", stream.packets.len());
-            let mut file = File::create(&opt.output).expect("Error opening output file");
+            let filename = format!("{}{n:04}_{:?}.hex", opt.output, stream.info.packet_type);
+            let mut file = File::create(&filename).expect("Error opening output file");
             let data = stream.extract_data();
-            println!("Writing {} packet payloads as hex to {}", data.len(), &opt.output);
+            println!("Writing {} packet payloads as hex to {}", data.len(), filename);
             for i in data {
                 file.write_all(hex::encode(i).as_bytes()).expect("Error writing data");
                 file.write_all(b"\n").expect("Error writing newline");
@@ -553,11 +564,11 @@ fn read_pcap(input: &str) -> Option<(PcapHeader, Vec<Stream>)> {
     }
 }
 
-fn filter_stream(streams: Vec<Stream>, stream_n: usize) -> Option<Stream> {
+fn filter_stream(streams: Vec<Stream>, stream_n: usize) -> Vec<Stream> {
     if stream_n < streams.len() {
-        Some(streams[stream_n].clone())
+        vec![streams[stream_n].clone()]
     } else {
-        None
+        vec![]
     }
 }
 

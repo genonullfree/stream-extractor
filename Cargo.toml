@@ -1,6 +1,6 @@
 [package]
 name = "stream-extractor"
-version = "0.3.2"
+version = "0.4.0"
 edition = "2021"
 authors = ["geno nullfree <nullfree.geno@gmail.com>"]
 license = "BSD-3-Clause"
@@ -11,6 +11,17 @@ repository = "https://github.com/genonullfree/stream-extractor.git"
 keywords = ["pcap", "tcp", "stream"]
 categories = ["command-line-utilities", "network-programming"]
 exclude = ["sample"]
+
+[profile.release]
+codegen-units=1
+opt-level = 0
+lto = true
+strip=true
+overflow-checks = false
+debug = false
+debug-assertions = false
+panic="abort"
+incremental = true
 
 [dependencies]
 clap = { version = "4.1.8", features = ["derive"] }

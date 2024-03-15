@@ -132,6 +132,7 @@ fn main() {
         Cmd::Scan(scan) => exec_scan(receiver, scan),
     };
 }
+
 fn exec_list(input: Receiver<(StreamKey, (StreamInfo, PPacket))>, opt: ListOpt) {
     let mut counts = StreamCounts::default();
 
@@ -251,15 +252,18 @@ impl Filter {
             protos,
         }
     }
+
     pub fn filter(&self, info: &StreamInfo) -> bool {
         self.filter_ip(&[info.a_ip, info.b_ip])
             && self.filter_port(&[info.a_port, info.b_port])
             && self.filter_mac(&[info.a_mac, info.b_mac])
             && self.filter_proto(&[info.packet_type])
     }
+
     pub fn bump(&mut self) {
         self.matches += 1;
     }
+
     fn filter_proto(&self, proto: &[PacketType]) -> bool {
         if let Some(ref protos) = self.protos {
             proto.iter().any(|x| protos.contains(x))
@@ -268,6 +272,7 @@ impl Filter {
             true
         }
     }
+  
     fn filter_port(&self, port: &[u16]) -> bool {
         if let Some(ref ports) = self.ports {
             port.iter().any(|x| ports.contains(x))
@@ -280,6 +285,7 @@ impl Filter {
     fn filter_ip(&self, ip: &[IpAddr]) -> bool {
         if let Some(ref ips) = self.ips {
             ip.iter().any(|x| ips.contains(x))
+
         } else {
             // Default to allowed if no filter is set
             true
